@@ -21,10 +21,6 @@ def check_positive(num: float) -> bool:
 def calc_total_price(price, num):
     return price * num
 
-
-
-
-
 # 保存订单信息
 def save_order_with_with(order_info:str):
     with open("order.txt", "a", encoding="utf-8") as f:
