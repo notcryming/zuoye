@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台管理 - 辰途智科CMS</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-inner">
+            <a href="/" class="brand">
+                <span class="brand-logo">辰</span>
+                <span>辰途智科</span>
+            </a>
+            <div class="nav-links">
+                <a href="/">首页</a>
+                <a href="/news">新闻动态</a>
+                <a href="/admin" class="active">后台管理</a>
+                <a href="#" id="logoutBtn">退出登录</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- 顶部信息栏 -->
+        <div class="admin-bar">
+            <div class="user-info">
+                欢迎回来，<strong>{{ username }}</strong> · 角色：管理员
+            </div>
+            <span class="tag" style="background: var(--success); color: #fff;">已登录</span>
+        </div>
+
+        <!-- 左右分栏：发布 + 管理 -->
+        <div class="admin-layout">
+            <!-- 发布新闻 -->
+            <div class="admin-panel">
+                <h3 class="admin-panel-title">✏️ 发布新新闻</h3>
+                <form id="newsForm">
+                    <div class="form-group">
+                        <label class="form-label" for="title">标题</label>
+                        <input type="text" id="title" class="form-input" placeholder="请输入新闻标题" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="category">分类</label>
+                        <select id="category" class="form-select">
+                            <option value="公告">公告</option>
+                            <option value="系统资讯">系统资讯</option>
+                            <option value="行业动态">行业动态</option>
+                            <option value="政策资讯">政策资讯</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="content">内容</label>
+                        <textarea id="content" class="form-textarea" placeholder="请输入新闻正文内容..." required></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary btn-block" id="publishBtn">发布新闻</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- 管理新闻 -->
+            <div class="admin-panel">
+                <h3 class="admin-panel-title">
+                    📋 新闻管理
+                    <span id="newsCount" style="margin-left: auto; font-size: 13px; font-weight: 400; color: var(--text-muted);"></span>
+                </h3>
+                <div id="adminNewsList">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">⏳</div>
+                        <p>正在加载...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        © 2026 辰途智科 · 企业官网定制与CMS内容管理系统
+    </footer>
+
+    <script>
+        // ===== 加载新闻列表 =====
+        async function loadNews() {
+            try {
+                const res = await fetch('/api/news');
+                const json = await res.json();
+                if (json.code === 200) {
+                    renderAdminList(json.data || []);
+                } else {
+                    renderError(json.msg || '加载失败');
+                }
+            } catch (e) {
+                renderError('网络错误');
+            }
+        }
+
+        function renderAdminList(list) {
+            const box = document.getElementById('adminNewsList');
+            const countEl = document.getElementById('newsCount');
+            countEl.textContent = `共 ${list.length} 条`;
+
+            if (list.length === 0) {
+                box.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📄</div>
+                        <p>暂无新闻</p>
+                    </div>`;
+                return;
+            }
+
+            box.innerHTML = list.map(n => `
+                <div class="admin-news-item">
+                    <div class="admin-news-info">
+                        <h4>${escapeHtml(n.title)}</h4>
+                        <p>
+                            <span class="tag tag-${n.category}">${n.category}</span>
+                            ${n.created_at} · ${n.commit}
+                        </p>
+                    </div>
+                    <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                        <a href="/news/${n.id}" class="btn btn-ghost btn-sm" target="_blank">查看</a>
+                        <button class="btn btn-danger btn-sm" onclick="deleteNews(${n.id}, '${escapeHtml(n.title)}')">删除</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderError(msg) {
+            document.getElementById('adminNewsList').innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">⚠️</div>
+                    <p>${msg}</p>
+                </div>`;
+        }
+
+        // ===== 发布新闻 =====
+        document.getElementById('newsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const title = document.getElementById('title').value.trim();
+            const content = document.getElementById('content').value.trim();
+            const category = document.getElementById('category').value;
+            const btn = document.getElementById('publishBtn');
+
+            if (!title || !content) {
+                showToast('标题和内容不能为空', 'error');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = '发布中...';
+
+            try {
+                const res = await fetch('/admin/news', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, content, category })
+                });
+
+                const json = await res.json();
+
+                if (res.status === 200 && json.code === 200) {
+                    showToast('新闻发布成功', 'success');
+                    document.getElementById('newsForm').reset();
+                    loadNews();
+                } else if (res.status === 401) {
+                    showToast('登录已过期，请重新登录', 'error');
+                    setTimeout(() => { window.location.href = '/login'; }, 1000);
+                } else if (res.status === 403) {
+                    showToast('权限不足，需要管理员权限', 'error');
+                } else {
+                    showToast(json.msg || '发布失败', 'error');
+                }
+            } catch (err) {
+                showToast('网络错误，请稍后重试', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '发布新闻';
+            }
+        });
+
+        // ===== 删除新闻 =====
+        async function deleteNews(id, title) {
+            if (!confirm(`确定要删除这条新闻吗？\n\n「${title}」`)) return;
+
+            try {
+                const res = await fetch(`/admin/news/${id}`, { method: 'DELETE' });
+                const json = await res.json();
+
+                if (res.status === 200 && json.code === 200) {
+                    showToast('删除成功', 'success');
+                    loadNews();
+                } else if (res.status === 401) {
+                    showToast('登录已过期，请重新登录', 'error');
+                    setTimeout(() => { window.location.href = '/login'; }, 1000);
+                } else if (res.status === 403) {
+                    showToast('权限不足，需要管理员权限', 'error');
+                } else {
+                    showToast(json.msg || '删除失败', 'error');
+                }
+            } catch (err) {
+                showToast('网络错误，请稍后重试', 'error');
+            }
+        }
+
+        // ===== 退出登录 =====
+        document.getElementById('logoutBtn').addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (!confirm('确定要退出登录吗？')) return;
+            try {
+                await fetch('/logout', { method: 'POST' });
+            } catch (err) { /* 忽略 */ }
+            window.location.href = '/login';
+        });
+
+        // ===== 工具函数 =====
+        function showToast(msg, type) {
+            const old = document.querySelector('.toast');
+            if (old) old.remove();
+            const toast = document.createElement('div');
+            toast.className = 'toast toast-' + (type || 'info');
+            toast.textContent = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 2500);
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        // 初始化
+        loadNews();
+    </script>
+</body>
+</html>

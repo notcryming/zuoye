@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>新闻动态 - 辰途智科</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-inner">
+            <a href="/" class="brand">
+                <span class="brand-logo">辰</span>
+                <span>辰途智科</span>
+            </a>
+            <div class="nav-links">
+                <a href="/">首页</a>
+                <a href="/news" class="active">新闻动态</a>
+                <a href="/login">后台登录</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">新闻动态</h2>
+            <span id="totalCount" style="color: var(--text-muted); font-size: 14px;"></span>
+        </div>
+
+        <!-- 分类筛选 -->
+        <div class="list-toolbar" id="filterBar">
+            <span class="filter-chip active" data-cat="all">全部</span>
+            <span class="filter-chip" data-cat="公告">公告</span>
+            <span class="filter-chip" data-cat="系统资讯">系统资讯</span>
+            <span class="filter-chip" data-cat="行业动态">行业动态</span>
+            <span class="filter-chip" data-cat="政策资讯">政策资讯</span>
+        </div>
+
+        <!-- 新闻列表 -->
+        <div class="news-list" id="newsList">
+            <div class="empty-state">
+                <div class="empty-state-icon">⏳</div>
+                <p>正在加载新闻...</p>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        © 2026 辰途智科 · 企业官网定制与CMS内容管理系统
+    </footer>
+
+    <script>
+        let allNews = [];
+        let currentFilter = 'all';
+
+        // 获取新闻列表（按发布时间倒序，后端已排序）
+        async function loadNews() {
+            try {
+                const res = await fetch('/api/news');
+                const json = await res.json();
+                if (json.code === 200) {
+                    allNews = json.data || [];
+                    render();
+                } else {
+                    showError('加载失败：' + (json.msg || '未知错误'));
+                }
+            } catch (e) {
+                showError('网络错误，请稍后重试');
+            }
+        }
+
+        function render() {
+            const list = document.getElementById('newsList');
+            const countEl = document.getElementById('totalCount');
+            const filtered = currentFilter === 'all'
+                ? allNews
+                : allNews.filter(n => n.category === currentFilter);
+
+            countEl.textContent = `共 ${filtered.length} 条`;
+
+            if (filtered.length === 0) {
+                list.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📄</div>
+                        <p>暂无相关新闻</p>
+                    </div>`;
+                return;
+            }
+
+            list.innerHTML = filtered.map(n => `
+                <div class="news-row">
+                    <div class="news-row-main">
+                        <a href="/news/${n.id}" class="news-row-title">${escapeHtml(n.title)}</a>
+                        <div class="news-row-content">${escapeHtml(n.content)}</div>
+                        <div class="news-row-meta">
+                            <span class="tag tag-${n.category}">${n.category || '未分类'}</span>
+                            <span>📅 ${n.created_at || '未知时间'}</span>
+                            <span>✍ ${n.commit || '未知'}</span>
+                        </div>
+                    </div>
+                    <a href="/news/${n.id}" class="btn btn-ghost btn-sm">查看</a>
+                </div>
+            `).join('');
+        }
+
+        function showError(msg) {
+            document.getElementById('newsList').innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">⚠️</div>
+                    <p>${msg}</p>
+                </div>`;
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        // 筛选切换
+        document.getElementById('filterBar').addEventListener('click', e => {
+            const chip = e.target.closest('.filter-chip');
+            if (!chip) return;
+            document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+            chip.classList.add('active');
+            currentFilter = chip.dataset.cat;
+            render();
+        });
+
+        loadNews();
+    </script>
+</body>
+</html>

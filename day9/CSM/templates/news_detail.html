@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if news %}{{ news.title }}{% else %}新闻不存在{% endif %} - 辰途智科</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-inner">
+            <a href="/" class="brand">
+                <span class="brand-logo">辰</span>
+                <span>辰途智科</span>
+            </a>
+            <div class="nav-links">
+                <a href="/">首页</a>
+                <a href="/news" class="active">新闻动态</a>
+                <a href="/login">后台登录</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-narrow">
+        <a href="/news" class="back-link">← 返回新闻列表</a>
+
+        {% if news %}
+        <article class="detail-card">
+            <h1 class="detail-title">{{ news.title }}</h1>
+            <div class="detail-meta">
+                <span class="tag tag-{{ news.category }}">{{ news.category }}</span>
+                <span>📅 {{ news.created_at }}</span>
+                <span>✍ 发布者：{{ news.commit }}</span>
+            </div>
+            <div class="detail-content">{{ news.content }}</div>
+        </article>
+        {% else %}
+        <div class="detail-card">
+            <div class="empty-state">
+                <div class="empty-state-icon">🔍</div>
+                <p>{{ error or '新闻不存在' }}</p>
+                <a href="/news" class="btn btn-primary" style="margin-top: 16px;">返回新闻列表</a>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <footer class="footer">
+        © 2026 辰途智科 · 企业官网定制与CMS内容管理系统
+    </footer>
+</body>
+</html>
