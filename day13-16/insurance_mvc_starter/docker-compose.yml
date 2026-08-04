@@ -1,0 +1,44 @@
+# ====================================================================
+#  保险精准营销 Flask 项目 —— Docker Compose 编排配置
+# ====================================================================
+#  使用方式：
+#    首次启动：docker compose up -d --build
+#    后续启动：docker compose up -d
+#    查看日志：docker compose logs -f
+#    停止容器：docker compose down
+# ====================================================================
+
+services:
+  insurance-ai-web:
+    # 从当前目录的 Dockerfile 构建
+    build: .
+
+    # 容器名称（便于 docker ps 识别）
+    container_name: insurance-ai-web
+
+    # 端口映射：宿主机 5000 → 容器 5000
+    ports:
+      - "5000:5000"
+
+    # 数据卷挂载：宿主机目录 → 容器目录，容器销毁数据不丢失
+    volumes:
+      # SQLite 数据库文件持久化
+      - ./instance:/app/instance
+      # 训练产出的 .joblib 模型文件持久化
+      - ./data/models:/app/data/models
+
+    # 环境变量：从宿主机 .env 文件读取，注入容器
+    # 支持自定义 LLM 密钥、数据库连接、JWT 密钥，无需修改 Dockerfile
+    env_file:
+      - .env
+
+    # 容器异常退出自动重启（除非手动 docker stop）
+    restart: unless-stopped
+
+    # 健康检查：每 30s 请求根路由，3 次失败标记为 unhealthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

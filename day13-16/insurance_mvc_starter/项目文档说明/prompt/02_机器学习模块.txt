@@ -1,0 +1,47 @@
+请基于现有的保险精准营销项目，新增 “机器学习训练与概率预测” 模块，要求：
+【参考资料】
+1. 读 “项目文档说明 / 03_API 接口文档.md” 的 “模型模块/model” 全章节，所有接口路径、请求参数、响应结构、业务错误码、角色权限严格对齐文档实现
+2. 读 “项目文档说明 / 02_AI 技术方案.md”，遵循机器学习特征工程、不平衡样本处理、模型持久化、预测逻辑规范
+3. 读 “项目文档说明 / 04_技术框架方案.md”，遵守分层架构规范（路由→service→model→utils 分层调用）
+4. 严格对齐现有 app/models/customer.py、user.py 的 ORM 类方法封装风格
+5. 严格对齐现有 app/api/v1/data.py、auth.py 路由写法：_parse_body 参数校验 + BizException 全局异常抛出 + 统一 {code,message,data} JSON 响应、@login_required/@role_required 权限装饰器
+【要创建 / 修改的文件】
+app/models/experiment.py——Experiment 实验记录 ORM 模型
+字段：id、model_name、accuracy、precision、recall、f1_score、roc_auc、params（JSON 存储可视化图表数据）、model_path、is_best、created_at、created_by
+类方法：create_record (db, args) /get_best_model (db) /paginate_list (db, page, per_page, filter_model) /clear_old_best (db)
+app/services/ml_service.py—— 机器学习核心业务服务
+方法 train_model (db, train_params, user_id)：实现 LR/XGBoost/RF 三模型训练，分层拆分数据集、不平衡权重配置、标准化仅训练集 fit、ROC-AUC 评估、自动标记最优模型、joblib 存储 model+scaler 捆绑文件
+方法 predict_all (db, model_name=None)：加载最优模型，全量客户特征标准化预测正类概率，回写 customers.predicted_prob 字段
+方法 predict_upload_excel (db, file, model_name=None)：解析上传 Excel，批量输出预测结果不入库
+方法 generate_visualization (db, chart_type, model_name)：读取实验 params 内图表 json，返回 base64 图片字符串
+app/utils/data_processor.py 补充特征编码工具函数
+encode_raw_features (df)：性别、车辆损伤 Label 编码，车龄有序编码，数值特征标准化处理
+decode_feature_text (val, field)：编码值反译为自然语言（供 LLM 模块调用）
+app/utils/visualizer.py—— 绘图工具
+生成 ROC 曲线、混淆矩阵、特征重要性、指标对比图，输出 PNG base64
+app/api/v1/model.py—— 模型模块路由蓝图
+POST /api/v1/model/train（@login_required+@role_required ("admin")）模型训练接口
+GET /api/v1/model/experiments（@login_required）实验记录分页
+GET /api/v1/model/best（@login_required）获取当前最优模型
+POST /api/v1/model/predict（@login_required）全量客户预测
+POST /api/v1/model/predict_upload（@login_required）上传文件离线预测
+GET /api/v1/model/visualization/<chart_type>（@login_required）模型可视化接口
+GET /api/v1/model/export/<model_name>（@login_required+admin）下载 joblib 模型文件
+POST /api/v1/model/import（@login_required+admin）上传导入模型
+app/api/v1/init.py—— 注册 model 蓝图至路由聚合函数
+.env.example 补充 MODEL_DIR 模型存储路径配置
+requirements.txt 追加 scikit-learn、xgboost、joblib、matplotlib、seaborn、numpy
+【约束】
+角色权限严格区分：普通 user 禁止调用 train/export/import 接口，返回 code=1003 权限不足
+所有分页接口严格遵循 API 文档 0.3 统一分页结构 {items,total,page,per_page,pages}
+训练时必须使用 stratify 分层抽样；XGBoost 配置 scale_pos_weight，LR/RF 使用 class_weight="balanced"
+标准化 scaler 必须与模型捆绑存储，预测阶段仅执行 transform 禁止重新 fit，杜绝数据泄露
+无客户数据、无训练实验、模型文件缺失场景抛出对应 BizException，使用文档定义业务码：2001/3002/3001
+模型文件统一存放 data/models 目录，使用绝对路径读取写入
+可视化接口返回 data 内 image_base64 字段，前端直接渲染图片
+【验收】
+admin 账号调用 POST /model/train 可完成三模型训练，experiments 表生成记录，单条 is_best=True
+调用 POST /model/predict 后 customers 表 predicted_prob 字段填充 0~1 概率值
+普通 user 访问 /model/train 返回 403+code=1003
+模型导出 / 导入接口可正常上传下载.joblib 文件
+各可视化接口可返回 base64 图片字符串

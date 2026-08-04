@@ -1,0 +1,5 @@
+# 大模型权重文件(超 GitHub 100MB 单文件限制,不入库,本地保留)
+*.safetensors
+
+# 大数据集(超 100MB,本地保留)
+day16/zuoye/yelp_train.json

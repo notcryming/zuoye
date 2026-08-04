@@ -1,0 +1,28 @@
+请基于现有保险精准营销 Flask 项目，完成 Docker 单容器部署配置，实现一键构建、启动，要求：
+【参考资料】
+1. 参考 “项目文档说明 / 04_技术框架方案.md” 项目启动入口、依赖清单、配置文件、数据存储目录规范
+2. 兼容 SQLite 本地数据库、外部 LLM API 网络访问，容器内持久化模型、数据库文件
+【要创建 / 修改的文件】
+Dockerfile—— 项目镜像构建文件
+基础镜像 python:3.11-slim，安装系统依赖、python 依赖
+复制项目代码、requirements.txt，pip 安装所有生产依赖
+创建 data/models、instance 持久化目录
+暴露 5000 端口，启动命令 python run_flask.py
+docker-compose.yml—— 容器编排配置
+服务：insurance-ai-web
+端口映射：5000:5000
+数据卷挂载：./instance、./data/models 持久化本地，容器销毁数据不丢失
+环境变量映射.env 文件全部配置项（数据库、LLM 密钥、JWT 密钥）
+.dockerignore—— 忽略文件清单：pycache、tests、.git、*.log、venv、dev 依赖、本地模型缓存
+deploy-readme.md—— 部署说明文档，包含构建、启动、停止、日志查看命令，环境变量配置说明
+【约束】
+容器启动自动执行数据库建表、初始化 admin 账号、默认 Prompt 模板，无需手动操作
+本地挂载卷保证数据库 insurance.db、训练产出.joblib 模型文件持久化宿主机
+镜像分层优化，依赖层与代码层分离减少重复构建耗时
+支持自定义.env 配置 LLM 密钥、数据库连接，无需修改 Dockerfile
+容器内程序监听 0.0.0.0:5000，外部宿主机可正常访问前端 SPA 页面与后端接口
+【验收】
+执行 docker-compose up -d 可正常构建镜像并后台启动容器
+容器启动后访问http://127.0.0.1:5000可打开前端登录页面，admin/admin123 正常登录
+上传 Excel、训练模型、生成邮件操作后，宿主机 instance、data/models 目录生成对应文件
+停止、删除容器后重新启动，原有客户数据、模型、邮件记录不丢失

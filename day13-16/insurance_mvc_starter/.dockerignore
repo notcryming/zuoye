@@ -1,0 +1,61 @@
+# ====================================================================
+#  Docker 构建忽略文件清单
+#  这些文件不进入镜像，减小镜像体积 + 避免本地缓存污染容器
+# ====================================================================
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# 测试文件（生产镜像不需要测试代码）
+tests/
+pytest.ini
+requirements-dev.txt
+.pytest_cache/
+
+# Git 版本控制
+.git/
+.gitignore
+.gitattributes
+
+# 日志文件
+*.log
+logs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 本地数据库文件（通过 volume 挂载，不打包进镜像）
+instance/*.db
+instance/*.db-journal
+
+# 本地模型缓存（通过 volume 挂载，不打包进镜像）
+data/models/*.joblib
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 环境变量文件（通过 docker-compose env_file 注入，不打包进镜像）
+.env
+
+# 文档与截图（不影响运行，减小镜像体积）
+运行截图/
+项目文档说明/
+deploy-readme.md
+
+# Docker 自身文件（避免循环拷贝）
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# 系统文件
+.DS_Store
+Thumbs.db
