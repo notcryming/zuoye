@@ -49,6 +49,16 @@ docker logs -f 容器ID
 docker system prune -a
 自注意力机制
 多头注意力机制
+bert是encoder-only的模型
+擅长：理解，分类，提取，判断关系
+只能做“填空题”
+大模型生成策略和超参数，调用大模型生成内容时，需要对解码策略进行调整，也就是超参调整
+temperature，Top-p，Max Length
+prompt engineering
+角色设定
+任务描述
+上下文（约束或要求）
+输出格式
 '''
 import torch
 print(torch.__version__)
