@@ -1,9 +1,77 @@
-# 旅行计划生成器.py (基于 LangChain 条件路由，支持单顾问/多顾问并发)
+# 旅行计划生成器.py (基于 LangChain 条件路由，支持终端实时交互)
 import os
+import sys
 import json
 import re
+import time
+import threading
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
+
+
+# ==========================================
+# 终端交互工具：Loading Spinner / 彩色输出
+# ==========================================
+# ANSI 颜色：让终端输出更好看（Windows 终端默认已支持 ANSI，Win10 以上）
+C_RESET  = "\033[0m"
+C_BOLD   = "\033[1m"
+C_GRAY   = "\033[90m"
+C_GREEN  = "\033[92m"
+C_YELLOW = "\033[93m"
+C_CYAN   = "\033[96m"
+C_BLUE   = "\033[94m"
+C_MAGENTA= "\033[95m"
+C_RED    = "\033[91m"
+
+
+class Spinner:
+    """后台线程显示 loading 动画，结束时用 stop(ok_message) 清除并打印完成提示。"""
+
+    def __init__(self, message: str = "思考中"):
+        self.message = message
+        self._stop = threading.Event()
+        self._thread = None
+        self._chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille 旋转符
+
+    def _run(self):
+        i = 0
+        while not self._stop.is_set():
+            ch = self._chars[i % len(self._chars)]
+            # \r 让光标回到行首，实现原地刷新动画
+            sys.stdout.write(f"\r{C_CYAN}{ch}{C_RESET} {self.message}...   ")
+            sys.stdout.flush()
+            time.sleep(0.08)
+            i += 1
+        # 结束后清除 spinner 行
+        sys.stdout.write("\r" + " " * 80 + "\r")
+        sys.stdout.flush()
+
+    def start(self):
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def stop(self, final_msg: str | None = None):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        if final_msg:
+            print(f"✅ {final_msg}")
+
+
+def run_with_spinner(func, message: str, *args, **kwargs):
+    """同步执行一个耗时函数，同时显示 loading spinner。返回函数的返回值。"""
+    spinner = Spinner(message)
+    spinner.start()
+    try:
+        result = func(*args, **kwargs)
+        spinner.stop()
+        return result
+    except Exception as e:
+        spinner.stop()
+        raise e
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -226,20 +294,29 @@ def invoke_consultant(key: str, context: str) -> tuple:
         return (key, info["name"], f"[该顾问暂时不可用: {e}]")
 
 
-def dispatch_question(question: str, verbose: bool = True) -> dict:
+def dispatch_question(question: str, verbose: bool = True, use_spinner: bool = True) -> dict:
     """
     主路由函数：让主管分析 → 分发到需要的顾问 → 并发调用 → 汇总结果
-    返回 {"question": ..., "decision": [...], "answers": {顾问编号: (显示名, 内容)}, "summary": ...}
+    verbose: 是否打印分发决策（终端交互用 True，脚本批处理可用 False）
+    use_spinner: 主管决策阶段是否显示 spinner 动画（终端交互用 True）
     """
-    # 1. 主管做出分发决策
-    raw_decision = supervisor_chain.invoke({"question": question})
+    # 1. 主管做出分发决策（带 spinner，避免"假死"）
+    if use_spinner:
+        raw_decision = run_with_spinner(
+            lambda: supervisor_chain.invoke({"question": question}),
+            "主管分析问题并分发"
+        )
+    else:
+        raw_decision = supervisor_chain.invoke({"question": question})
     consultant_keys = parse_consultant_list(raw_decision)
 
     if verbose:
-        print(f"📋 主管分发决策: 选召 {len(consultant_keys)} 位顾问 → "
-              f"{[CONSULTANTS[k]['name'] for k in consultant_keys]}")
+        color = C_GREEN if consultant_keys else C_YELLOW
+        print(f"  📋 {C_BOLD}{color}主管分发决策{C_RESET}: "
+              f"选召 {len(consultant_keys)} 位顾问 → "
+              f"{color}{[CONSULTANTS[k]['name'] for k in consultant_keys]}{C_RESET}")
         if not consultant_keys:
-            print("  (主管判断：该问题与旅行无关，无人处理)")
+            print(f"     ({C_YELLOW}主管判断：该问题与旅行无关{C_RESET})")
 
     # 2. 没有合适顾问：返回兜底回答
     if not consultant_keys:
@@ -247,33 +324,56 @@ def dispatch_question(question: str, verbose: bool = True) -> dict:
             "question": question,
             "decision": [],
             "answers": {},
-            "summary": "您好，我是旅行顾问，专长是回答旅游相关的问题（目的地、预算、交通、美食、文化等）。您的问题似乎超出了我的服务范围~",
+            "summary": f"{C_YELLOW}您好，我是旅行顾问，专长是回答旅游相关的问题（目的地、预算、交通、美食、文化等）。您的问题似乎超出了我的服务范围~{C_RESET}",
         }
 
     # 3. 单顾问直接调用，多顾问使用线程池并发
     answers = {}
     if len(consultant_keys) == 1:
         key = consultant_keys[0]
-        _, cname, ans = invoke_consultant(key, question)
+        msg = f"{CONSULTANTS[key]['name']}正在回答"
+        if use_spinner:
+            _, cname, ans = run_with_spinner(
+                lambda: invoke_consultant(key, question), msg
+            )
+        else:
+            _, cname, ans = invoke_consultant(key, question)
         answers[key] = (cname, ans)
         if verbose:
-            print(f"✅ {cname} 回答完成")
+            print(f"  ✅ {C_GREEN}{cname}{C_RESET} 回答完成")
     else:
         if verbose:
-            print(f"⚡ 并发调用 {len(consultant_keys)} 位顾问中...")
-        with ThreadPoolExecutor(max_workers=len(consultant_keys)) as pool:
-            future_map = {
-                pool.submit(invoke_consultant, k, question): k
-                for k in consultant_keys
-            }
-            for future in as_completed(future_map):
-                k, cname, ans = future.result()
-                answers[k] = (cname, ans)
-                if verbose:
-                    print(f"  ✅ {cname} 回答完成")
+            print(f"  ⚡ 并发调用 {C_BOLD}{C_CYAN}{len(consultant_keys)}{C_RESET} 位顾问中...")
+        # 并发 + spinner（spinner 只在外层，由主线程负责动画）
+        spinner = Spinner(f"{len(consultant_keys)} 位顾问协作中")
+        if use_spinner:
+            spinner.start()
+        try:
+            with ThreadPoolExecutor(max_workers=len(consultant_keys)) as pool:
+                future_map = {
+                    pool.submit(invoke_consultant, k, question): k
+                    for k in consultant_keys
+                }
+                for future in as_completed(future_map):
+                    k, cname, ans = future.result()
+                    answers[k] = (cname, ans)
+                    if verbose and not use_spinner:
+                        print(f"    ✅ {C_GREEN}{cname}{C_RESET} 完成")
+        finally:
+            if use_spinner:
+                spinner.stop()
 
-    # 4. 汇总所有顾问的回答，形成完整最终答复
-    summary = aggregate_answers(question, answers, consultant_keys)
+    # 4. 汇总所有顾问的回答
+    if len(consultant_keys) >= 2:
+        if use_spinner:
+            summary = run_with_spinner(
+                lambda: aggregate_answers(question, answers, consultant_keys),
+                "主编正在整理回答"
+            )
+        else:
+            summary = aggregate_answers(question, answers, consultant_keys)
+    else:
+        summary = aggregate_answers(question, answers, consultant_keys)
 
     return {
         "question": question,
@@ -331,39 +431,58 @@ def aggregate_answers(question: str, answers: dict, consultant_keys: list) -> st
 # ==========================================
 # 第五步：旅行计划生成器（目的地+天数+预算 → 自动全流程）
 # ==========================================
-def build_travel_plan(destination: str, days: int, budget: float) -> dict:
+def build_travel_plan(destination: str, days: int, budget: float,
+                      verbose: bool = True, use_spinner: bool = True) -> dict:
     """
-    旅行计划生成器：用户输入目的地 + 天数 + 预算，
-    自动把所有 5 位顾问都召唤出来，生成一份完整的旅行计划书。
+    旅行计划生成器：目的地 + 天数 + 预算 → 全顾问并发 → 完整计划书
     """
-    # 1. 组装上下文，让每个顾问拿到完整信息
     full_context = (
         f"目的地：{destination} | 旅行天数：{days}天 | 总预算：{budget}元人民币"
     )
-
     all_keys = list(CONSULTANTS.keys())
-    print(f"\n🌏 旅行计划生成器启动！")
-    print(f"  目的地: {destination}  |  天数: {days}天  |  预算: {budget}元")
-    print(f"  召唤全部 {len(all_keys)} 位顾问并发工作中...\n")
 
-    # 2. 并发调用所有 5 个顾问
+    if verbose:
+        print(f"\n{C_BOLD}{C_GREEN}🌏 旅行计划生成器启动！{C_RESET}")
+        print(f"   目的地: {C_YELLOW}{destination}{C_RESET}  |  "
+              f"天数: {C_CYAN}{days}天{C_RESET}  |  "
+              f"预算: {C_MAGENTA}{budget}元{C_RESET}")
+
+    # 2. 并发调用所有 5 个顾问（带 spinner）
     answers = {}
-    with ThreadPoolExecutor(max_workers=len(all_keys)) as pool:
-        future_map = {
-            pool.submit(invoke_consultant, k, full_context): k
-            for k in all_keys
-        }
-        for i, future in enumerate(as_completed(future_map), 1):
-            k, cname, ans = future.result()
-            answers[k] = (cname, ans)
-            print(f"  [{i}/{len(all_keys)}] ✅ {cname} 完成")
+    spinner = Spinner(f"召唤 {len(all_keys)} 位顾问并发工作中")
+    if use_spinner:
+        spinner.start()
+    try:
+        with ThreadPoolExecutor(max_workers=len(all_keys)) as pool:
+            future_map = {
+                pool.submit(invoke_consultant, k, full_context): k
+                for k in all_keys
+            }
+            for i, future in enumerate(as_completed(future_map), 1):
+                k, cname, ans = future.result()
+                answers[k] = (cname, ans)
+                if verbose and not use_spinner:
+                    print(f"   [{i}/{len(all_keys)}] ✅ {C_GREEN}{cname}{C_RESET} 完成")
+    finally:
+        if use_spinner:
+            spinner.stop()
+
+    if verbose:
+        for i, k in enumerate(all_keys, 1):
+            if k in answers:
+                print(f"   [{i}/{len(all_keys)}] ✅ {C_GREEN}{answers[k][0]}{C_RESET} 完成")
 
     # 3. 汇总为完整计划书
-    print("\n📑 主编正在整理计划书...")
     plan_question = f"去{destination}旅行{days}天，预算{budget}元，生成一份完整旅行计划"
-    plan = aggregate_answers(plan_question, answers, all_keys)
+    if use_spinner:
+        plan = run_with_spinner(
+            lambda: aggregate_answers(plan_question, answers, all_keys),
+            "主编整理完整计划书"
+        )
+    else:
+        plan = aggregate_answers(plan_question, answers, all_keys)
 
-    # 4. 额外生成每日行程骨架（基于天数，简单规则，不调用 LLM）
+    # 4. 每日行程骨架（规则生成，瞬时完成）
     daily_skeleton = build_daily_skeleton(destination, days, answers)
 
     return {
@@ -424,94 +543,268 @@ def build_daily_skeleton(destination: str, days: int, answers: dict) -> str:
 
 
 # ==========================================
-# 第六步：打印与交互入口
+# 第六步：彩色美化打印、命令帮助、终端交互
 # ==========================================
+def _line(char: str = "─", length: int = 70):
+    return f"{C_GRAY}{char * length}{C_RESET}"
+
+
 def print_result(result: dict):
-    """美化输出路由/分发结果"""
-    print("\n" + "=" * 70)
-    print(f"👤 用户提问: {result['question']}")
-    print("-" * 70)
-    print(f"📋 主管分发决策:")
-    if result["decision"]:
-        for key in result["decision"]:
-            print(f"   ↳ {CONSULTANTS[key]['name']} ({key})")
+    """美化输出路由/分发结果（带颜色与分隔线）"""
+    q = result["question"]
+    dec = result["decision"]
+    print()
+    print(_line("═"))
+    print(f"  {C_BOLD}👤 用户提问:{C_RESET} {q}")
+    print(_line())
+    print(f"  {C_BOLD}📋 主管分发决策:{C_RESET}")
+    if dec:
+        for key in dec:
+            print(f"     ↳ {C_GREEN}{CONSULTANTS[key]['name']}{C_RESET} {C_GRAY}({key}){C_RESET}")
     else:
-        print("   ↳ （无顾问匹配，转交通用客服）")
-    print("-" * 70)
+        print(f"     ↳ {C_YELLOW}（无顾问匹配，转通用客服）{C_RESET}")
+    print(_line())
     print(result["summary"])
-    print("=" * 70 + "\n")
+    print(_line("═"))
+    print()
 
 
 def print_travel_plan(plan: dict):
-    """美化输出完整旅行计划"""
-    print("\n" + "=" * 70)
-    print(f"🌏 【{plan['destination']} · {plan['days']}天 · 预算{plan['budget']}元】 完整旅行计划书")
-    print("-" * 70)
-    print(f"📋 参与顾问 ({len(plan['decision'])} 位): "
-          f"{' / '.join(CONSULTANTS[k]['name'] for k in plan['decision'])}")
-    print("-" * 70)
+    """美化输出完整旅行计划（带颜色与分隔线）"""
+    print()
+    print(_line("═"))
+    print(f"  {C_BOLD}{C_GREEN}🌏 【{plan['destination']} · {plan['days']}天 · 预算{plan['budget']}元】 完整旅行计划书{C_RESET}")
+    print(_line())
+    print(f"  {C_BOLD}📋 参与顾问 ({len(plan['decision'])} 位):{C_RESET} "
+          f"{C_CYAN}{' / '.join(CONSULTANTS[k]['name'] for k in plan['decision'])}{C_RESET}")
+    print(_line())
     print(plan["plan"])
-    print("-" * 70)
+    print(_line())
     print(plan["daily_skeleton"])
-    print("=" * 70 + "\n")
+    print(_line("═"))
+    print()
+
+
+def _print_help():
+    """打印命令帮助"""
+    print()
+    print(_line("─"))
+    print(f"  {C_BOLD}💡 可用命令/快捷键:{C_RESET}")
+    print(f"   · 直接输入旅行相关问题 → {C_GREEN}主管自动分发顾问回答{C_RESET}")
+    print(f"   · {C_YELLOW}plan 目的地 天数 预算{C_RESET}   → 一行生成完整旅行计划（例：plan 东京 5 8000）")
+    print(f"   · {C_YELLOW}plan{C_RESET}                    → 交互式输入 目的地/天数/预算")
+    print(f"   · {C_YELLOW}consultants{C_RESET}               → 列出所有可用顾问")
+    print(f"   · {C_YELLOW}help{C_RESET} 或 {C_YELLOW}?{C_RESET}              → 显示本帮助")
+    print(f"   · {C_YELLOW}exit{C_RESET} 或 Ctrl+C           → 退出")
+    print(_line("─"))
+    print()
+
+
+def _print_consultants():
+    """打印顾问列表"""
+    icons = {
+        "destination": "🗺️",
+        "budget": "💰",
+        "transportation": "🚄",
+        "food": "🍜",
+        "culture": "🎭",
+    }
+    print()
+    print(_line("─"))
+    print(f"  {C_BOLD}👥 可用顾问列表 ({len(CONSULTANTS)} 位):{C_RESET}")
+    for k, info in CONSULTANTS.items():
+        icon = icons.get(k, "⭐")
+        print(f"     {icon} {C_GREEN}{info['name']}{C_RESET} {C_GRAY}({k}){C_RESET}")
+    print(_line("─"))
+    print()
 
 
 def interactive_qa():
-    """问答模式：用户任意提问，主管自动分发"""
-    print("\n🤖 旅行智能问答系统启动！")
-    print("   问任意旅行相关问题，我会自动分发给适合的顾问")
-    print("   输入 plan 进入旅行计划生成器；输入 exit 退出\n")
+    """
+    终端实时交互问答：
+    - 直接提问 → 主管自动分发
+    - plan 东京 5 8000 → 一行生成旅行计划
+    - help / consultants → 帮助/顾问列表
+    - exit / Ctrl+C → 退出
+    """
+    # 欢迎 banner
+    # 顾问名简化：去掉末尾"顾问/规划师"（如 目的地顾问→目的地，预算规划师→预算规划）
+    def _short(s: str) -> str:
+        return re.sub(r"(顾问|规划师)$", "", s)
+    banner = (
+        f"\n{C_BOLD}{C_CYAN}╔══════════════════════════════════════════════════════════════════╗\n"
+        f"║         🛫  旅行智能助手  |  主管自动分发专业顾问                ║\n"
+        f"╚══════════════════════════════════════════════════════════════════╝{C_RESET}\n"
+        f"   顾问团队: {C_GREEN}{_short(CONSULTANTS['destination']['name'])}{C_RESET} / "
+        f"{C_MAGENTA}{_short(CONSULTANTS['budget']['name'])}{C_RESET} / "
+        f"{C_BLUE}{_short(CONSULTANTS['transportation']['name'])}{C_RESET} / "
+        f"{C_YELLOW}{_short(CONSULTANTS['food']['name'])}{C_RESET} / "
+        f"{C_RED}{_short(CONSULTANTS['culture']['name'])}{C_RESET}\n"
+        f"   输入 {C_YELLOW}help{C_RESET} 查看所有命令，{C_YELLOW}exit{C_RESET} 退出\n"
+    )
+    print(banner)
+
     while True:
         try:
-            user = input("👤 请提问: ").strip()
+            user = input(f" {C_BOLD}{C_CYAN}✈️{C_RESET} 你: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n👋 再见！")
+            print(f"\n{C_GREEN}👋 再见！旅途愉快 ✈️{C_RESET}\n")
             break
         if not user:
             continue
-        if user.lower() == "exit":
-            print("👋 再见！")
+
+        lower = user.lower()
+
+        # --- 命令：退出 ---
+        if lower in ("exit", "quit", "q"):
+            print(f"{C_GREEN}👋 再见！旅途愉快 ✈️{C_RESET}\n")
             break
-        if user.lower() == "plan":
-            try:
-                dest = input("  🌏 目的地: ").strip()
-                days = int(input("  📅 天数: ").strip())
-                budget = float(input("  💰 预算(元): ").strip())
-            except Exception:
-                print("❌ 输入不合法，已返回问答模式")
-                continue
-            plan = build_travel_plan(dest, days, budget)
-            print_travel_plan(plan)
+
+        # --- 命令：帮助 ---
+        if lower in ("help", "?"):
+            _print_help()
             continue
-        result = dispatch_question(user, verbose=True)
-        print_result(result)
+
+        # --- 命令：顾问列表 ---
+        if lower in ("consultants", "顾问", "list"):
+            _print_consultants()
+            continue
+
+        # --- 命令：旅行计划生成器 ---
+        # 支持 "plan" 交互式 或 "plan 东京 5 8000" 一行式
+        if lower.startswith("plan"):
+            parts = user.split()
+            # plan 东京 5 8000 → 4 个 token
+            if len(parts) >= 4:
+                try:
+                    dest = parts[1]
+                    days = int(parts[2])
+                    budget = float(parts[3])
+                    if days <= 0 or budget < 0:
+                        raise ValueError
+                except ValueError:
+                    print(f"  {C_RED}❌ 格式不对。正确用法: plan 目的地 天数 预算{C_RESET}")
+                    print(f"     例: plan 东京 5 8000")
+                    continue
+                try:
+                    plan = build_travel_plan(dest, days, budget, verbose=True, use_spinner=True)
+                    print_travel_plan(plan)
+                except Exception as e:
+                    print(f"  {C_RED}❌ 生成计划失败: {e}{C_RESET}")
+                continue
+
+            # 否则走交互式
+            print(f"  {C_CYAN}📝 交互式生成旅行计划（输入 cancel 取消）{C_RESET}")
+            try:
+                dest = input(f"   🌏 目的地: ").strip()
+                if dest.lower() == "cancel":
+                    continue
+                days_s = input(f"   📅 天数: ").strip()
+                if days_s.lower() == "cancel":
+                    continue
+                budget_s = input(f"   💰 预算(元): ").strip()
+                if budget_s.lower() == "cancel":
+                    continue
+                days = int(days_s)
+                budget = float(budget_s)
+                if days <= 0 or budget < 0:
+                    raise ValueError
+            except ValueError:
+                print(f"  {C_RED}❌ 输入不合法（天数必须是正整数，预算必须是非负数）{C_RESET}\n")
+                continue
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n  {C_GREEN}已取消{C_RESET}\n")
+                continue
+
+            try:
+                plan = build_travel_plan(dest, days, budget, verbose=True, use_spinner=True)
+                print_travel_plan(plan)
+            except Exception as e:
+                print(f"  {C_RED}❌ 生成计划失败: {e}{C_RESET}")
+            continue
+
+        # --- 默认：当作旅行问题，让主管分发 ---
+        try:
+            result = dispatch_question(user, verbose=True, use_spinner=True)
+            print_result(result)
+        except Exception as e:
+            print(f"  {C_RED}❌ 运行出错: {e}{C_RESET}\n")
+
+
+def run_test_cases():
+    """运行预设测试案例（脚本模式 --test 时调用）"""
+    tests = [
+        ("单顾问-目的地", "去成都玩有什么必去的景点？"),
+        ("复合-预算+目的地", "两个人去泰国玩一周，带 12000 元够吗？该怎么花？"),
+        ("单顾问-美食", "北京有什么好吃的？推荐几家餐厅。"),
+        ("单顾问-交通", "去巴黎坐飞机还是高铁？地铁怎么坐？"),
+        ("单顾问-文化", "去日本玩要注意什么文化禁忌？"),
+        ("多顾问全招", "我想去云南大理 5 天，预算 5000，吃的住的交通和玩什么全帮我看看"),
+        ("无关问题", "帮我推荐一款笔记本电脑"),
+    ]
+    print(f"\n{C_BOLD}🚀 运行测试案例（共 {len(tests)} 个）{C_RESET}\n")
+    for label, q in tests:
+        print(f"\n{C_BOLD}{C_BLUE}{'# ' * 35}{C_RESET}")
+        print(f"{C_BOLD}  🏷️  案例:{C_RESET} {label}")
+        try:
+            result = dispatch_question(q, verbose=True, use_spinner=True)
+            print_result(result)
+        except Exception as e:
+            print(f"  {C_RED}❌ 案例失败: {e}{C_RESET}\n")
+
+    # 旅行计划生成器测试
+    print(f"\n{C_BOLD}{'🎯' * 20}{C_RESET}")
+    print(f"{C_BOLD}🎯 测试旅行计划生成器: 东京 5 天 8000 元{C_RESET}")
+    try:
+        plan = build_travel_plan("东京", 5, 8000, verbose=True, use_spinner=True)
+        print_travel_plan(plan)
+    except Exception as e:
+        print(f"  {C_RED}❌ 旅行计划生成失败: {e}{C_RESET}")
 
 
 if __name__ == "__main__":
-    # ==========================================
-    # 自测：单顾问、复合问题、旅行计划生成器
-    # ==========================================
-    tests = [
-        "去成都玩有什么必去的景点？",                    # 单顾问：目的地
-        "两个人去泰国玩一周，带 12000 元够吗？该怎么花？",  # 复合：预算+目的地+可能美食
-        "北京有什么好吃的？推荐几家餐厅。",                # 单顾问：美食
-        "去巴黎坐飞机还是高铁？地铁怎么坐？",              # 单顾问：交通
-        "去日本玩要注意什么文化禁忌？",                    # 单顾问：文化
-        "我想去云南大理 5 天，预算 5000，吃的住的交通和玩什么全帮我看看",  # 多顾问全招
-        "帮我推荐一款笔记本电脑",                          # 无关，无顾问
-    ]
+    # 命令行参数：默认直接进入交互
+    parser = argparse.ArgumentParser(
+        description="旅行智能助手 · 主管自动分发 5 位专业顾问",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "示例:\n"
+            "  python 旅行计划生成器.py                  启动终端交互\n"
+            "  python 旅行计划生成器.py --test            运行预设测试案例后进入交互\n"
+            "  python 旅行计划生成器.py --plan 东京 5 8000  直接生成一份旅行计划并打印\n"
+        ),
+    )
+    parser.add_argument("--test", action="store_true", help="先运行预设测试案例再进入交互")
+    parser.add_argument("--plan", nargs=3, metavar=("目的地", "天数", "预算"),
+                        help="直接生成指定旅行计划（例：--plan 东京 5 8000）")
+    parser.add_argument("--no-interactive", action="store_true",
+                        help="--test 或 --plan 执行完后不进入交互，直接退出")
+    args = parser.parse_args()
 
-    print("🚀 运行【单/多顾问路由】测试案例：")
-    for q in tests:
-        print("\n" + "#" * 70)
-        result = dispatch_question(q, verbose=True)
-        print_result(result)
+    # 1. --plan 直接生成计划
+    if args.plan:
+        try:
+            dest = args.plan[0]
+            days = int(args.plan[1])
+            budget = float(args.plan[2])
+        except ValueError:
+            print(f"{C_RED}❌ --plan 参数格式错误: --plan 目的地 天数 预算{C_RESET}")
+            print(f"   例: --plan 东京 5 8000")
+            sys.exit(1)
+        try:
+            plan = build_travel_plan(dest, days, budget, verbose=True, use_spinner=True)
+            print_travel_plan(plan)
+        except Exception as e:
+            print(f"{C_RED}❌ 生成计划失败: {e}{C_RESET}")
+            sys.exit(2)
+        if args.no_interactive:
+            sys.exit(0)
 
-    # 旅行计划生成器测试
-    print("\n" + "🎯" * 30)
-    print("🎯 现在运行【旅行计划生成器】测试案例：")
-    plan = build_travel_plan(destination="东京", days=5, budget=8000)
-    print_travel_plan(plan)
+    # 2. --test 运行测试案例
+    if args.test:
+        run_test_cases()
+        if args.no_interactive:
+            sys.exit(0)
 
-    # 最后进入交互式问答
+    # 3. 默认（或 test/plan 之后）进入终端实时交互
     interactive_qa()

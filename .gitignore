@@ -6,3 +6,19 @@ day16/zuoye/yelp_train.json
 
 # 环境变量(含密钥,禁止入库)
 .env
+
+# Python 字节码缓存
+__pycache__/
+*.py[cod]
+
+# Chroma 向量数据库(可由脚本重建)
+chroma_db/
+
+# 本地模型权重(体积过大,本地保留)
+day20/model/
+
+# Trae 工具产物
+.trae-html-share-packages/
+
+# 与作业无关的 HTML 分享包
+nlp-llm-interview-qa/

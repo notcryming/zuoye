@@ -1,0 +1,119 @@
+import os
+import jieba
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_classic.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+
+from dotenv import load_dotenv
+load_dotenv()
+
+api_key = os.getenv("API_KEY")
+base_url = os.getenv("BASE_URL")
+model_name = os.getenv("MODEL_NAME")
+
+local_model_path = r"C:\Users\ASUS\Desktop\shixun1\day20\model\bge-large-zh-v1.5"
+
+def run_rag_qa(query, persist_directory="./chroma_db"):
+    if not os.path.exists(persist_directory):
+        print(f"❌ 找不到向量数据库目录 '{persist_directory}'，请先运行 2_vector_builder.py。")
+        return
+
+    print("▶ 正在加载嵌入模型...")
+    embeddings = HuggingFaceEmbeddings(
+        model_name=local_model_path,
+        model_kwargs={"device": "cuda"},
+        encode_kwargs={"normalize_embeddings": True}
+    )
+
+    print("▶ 正在加载本地向量数据库...")
+    vectorstore = Chroma(
+        persist_directory=persist_directory,
+        embedding_function=embeddings
+    )
+
+    llm = ChatOpenAI(model=model_name, temperature=0, api_key=api_key, base_url=base_url)
+
+    system_prompt = (
+        "你是华为有限公司的内部智能人事/行政助手。\n"
+        "请严格基于以下提供的公司内部文档内容回答用户问题。\n"
+        "如果你在文档中找不到答案，请直接说“根据提供的文档，我无法回答该问题”，绝不能凭空编造信息。\n\n"
+        "【参考文档内容】\n"
+        "{context}"
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "{input}"),
+    ])
+
+    store_result = vectorstore.get()
+
+    # 重建Document列表，给BM25用
+    documents = [
+        Document(page_content=txt, metadata=meta)
+        for txt, meta in zip(store_result["documents"], store_result["metadatas"])
+    ]
+
+    def jieba_tokenize(text):
+        return jieba.lcut(text)
+
+    bm25_retriever = BM25Retriever.from_documents(
+        documents,
+        preprocess_func=jieba_tokenize
+    )
+    bm25_retriever.k = 5
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+    # 集成混合检索器，权重控制两路检索的占比
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, retriever],
+        weights=[0.4, 0.6]  # 0.4权重给BM25关键词，0.6给向量语义检索
+    )
+
+    def format_docs(docs):
+        return "\n".join(doc.page_content for doc in docs)
+
+    # ==============================
+    # ✅ 修复：只检索一次，给打印 + 给LLM用
+    # ==============================
+    docs = ensemble_retriever.invoke(query)[:5]
+    print(docs)
+
+    # 打印分块
+    print("\n" + "="*60)
+    print(f"📄 检索到的分块数量：{len(docs)}")
+    print("="*60)
+    for i, doc in enumerate(docs):
+        print(f"\n--- 分块 {i+1} ---")
+        print(f"内容：{doc.page_content}")
+    print("\n" + "="*60 + "\n")
+
+    # ==============================
+    # ✅ 修复：链里直接使用上面检索好的 docs（不再二次检索）
+    # ==============================
+    # 组合好检索到的参考文档，加入提示词里，然后发给大模型，返回输出为str
+    rag_chain = (
+        {"context": lambda x: format_docs(docs), "input": lambda x: x["input"]}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    print(f"\n================ 问答测试 ================")
+    print(f"👤 用户提问: {query}")
+    print("🤖 正在检索知识库并生成答案，请稍候...\n")
+
+    answer = rag_chain.invoke({"input": query})
+
+    print("💡 回答:")
+    print(answer)
+    print("\n==========================================")
+
+if __name__ == "__main__":
+    test_query = "华为今年赚了多少"
+    run_rag_qa(test_query)
